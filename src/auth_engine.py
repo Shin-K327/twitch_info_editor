@@ -2,6 +2,7 @@ import certifi
 from concurrent import futures
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
+import os
 import random
 import time
 from urllib.parse import urlencode, urlparse, parse_qs
@@ -19,27 +20,47 @@ class TokenHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
 
-        print(self.path)
-        print(self.headers)
-
         rcvd_query = urlparse(self.path)[4]
         query_dict = parse_qs(rcvd_query)
 
-        # とりあえず判明してる分のレスポンスを定義する
+        # リダイレクト時のURIに含まれてる文字列で処理を分岐させる
         if 'code' in query_dict.keys() and 'state' in query_dict.keys():
             self.send_response(200)
-            self.send_header('Content-Type', 'text/plain; charset=utf-8')
-            self.end_headers()
-            self.wfile.write(b'Authorized')
+
+            # ToDO:htmlディレクトリ配下にあるスタイルシートファイルのパスを取る処理を追加する
+            css_path = "os.pathジョインうんたら！"
+
+            html = self._view_content('200.html').format(CSSPATH=css_path)
+
+            if html is not None:
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(html.encode('utf-8'))
+            else :
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(b'Authentication Succeeded')
 
             self.server.redirect_query = query_dict
-
             self.server.server_close()
 
         elif 'error' in query_dict.keys():
             self.send_response(400)
             self.server.server_close()
 
+    # バイナリ形式でHTMLファイルを返却するメソッド、サブディレクトリは直で書いてください
+    def _view_content(self, filename):
+        subdir = 'html'
+        filepath = os.path.join(os.getcwd(), subdir, filename)
+        try:
+            with open(filepath, mode='r', encoding='utf_8') as f:
+                return f.read()
+        except FileNotFoundError as e:
+            print(f'指定されたファイルが見つかりません。\n{e}')
+            return None
+        except TypeError as e:
+            print(f'ファイルが読み込める形式ではありません。\n{e}')
+            return None
 
 class AuthCodeFlow(object):
 
@@ -84,6 +105,7 @@ class AuthCodeFlow(object):
         code_query = self._query_generator('response_type', 'client_id', 'redirect_uri', 'scope', 'state')
         print(code_query)
 
+        # HACK:サーバプロセスをサブプロセスで動作させるように書き換える
         with futures.ThreadPoolExecutor(max_workers=2) as executor:
 
             # サーバ起動してリクエストを受け付ける状態へ
@@ -98,27 +120,26 @@ class AuthCodeFlow(object):
             )
 
             count = 0
+            token_query = None
             while True :
                 if httpd.redirect_query is not None:
                     print(f'code receive:{httpd.redirect_query}')
                     response_data = httpd.redirect_query
+                    token_query = self._query_generator(
+                        'client_id', 'client_secret', 'grant_type', 'redirect_uri',
+                        code=response_data['code'][0],
+                    )
                     break
                 elif count == 10:
+                    # サーバ停止コマンドが上手く処理されないので代替案を考える
                     print(f'server timeout, aborting processes...')
                     httpd.server_close()
-                    break
+                    return None
                 time.sleep(1)
                 count += 1
                 print('receiving data...')
 
-            token_query = self._query_generator(
-                'client_id', 'client_secret', 'grant_type', 'redirect_uri',
-                code=response_data['code'][0],
-            )
-
-        # ToDO:レスポンスコードをチェックして処理を分岐する
-        # if
-
+        #認証用URLが複数ある場合メソッドに持たせるかコンストラクタに持たせるか考える
         result_data, result_status = self._http_requester(
                 'https://id.twitch.tv/oauth2/token',
                 'POST',
@@ -129,6 +150,7 @@ class AuthCodeFlow(object):
             return result_data
         else:
             print(f'トークン取得失敗\nステータス:{result_status}')
+            return None
 
 
     def _http_requester(self, baseuri, methods, query):
